@@ -19,28 +19,48 @@ jobs:
           fetch-depth: 0
           lfs: true
 
-      # ⬇️ Stáhne poslední "pbi-tools Core" ZIP a přidá exe do PATH
-      - name: Download pbi-tools Core (latest)
+      # ⬇️ Stáhni pbi-tools (Core win-x64; fallback na Desktop ZIP), ulož plnou cestu k EXE do outputu
+      - name: Download pbi-tools ZIP
+        id: pbitools
         shell: pwsh
         run: |
           $rel = Invoke-RestMethod -Uri https://api.github.com/repos/pbi-tools/pbi-tools/releases/latest
-          $asset = $rel.assets | Where-Object { $_.name -match 'pbi-tools\.core.*(windows|win).*x64\.zip' }
-          if (-not $asset) { throw "pbi-tools Core (Windows x64) ZIP not found on latest release." }
+
+          # Nejprve zkus Core pro Windows x64 (název má pattern "_win-x64.zip")
+          $asset = $rel.assets | Where-Object { $_.name -like 'pbi-tools.core.*_win-x64.zip' }
+
+          # Fallback: Desktop ZIP pro Windows (obsahuje pbi-tools.exe taky)
+          if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -like 'pbi-tools.*.zip' } | Select-Object -First 1 }
+
+          if (-not $asset) { throw "Nenalezen žádný vhodný ZIP asset pro Windows." }
+
+          Write-Host "Stahuji: $($asset.name)"
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile pbi-tools.zip
-          Expand-Archive pbi-tools.zip -DestinationPath "$env:RUNNER_TEMP\pbi-tools" -Force
-          $exe = Get-ChildItem "$env:RUNNER_TEMP\pbi-tools" -Recurse -Filter "pbi-tools*.exe" | Select-Object -First 1
-          if (-not $exe) { throw "pbi-tools executable not found after extract." }
-          Add-Content $env:GITHUB_PATH ($exe.DirectoryName)
+
+          $dest = Join-Path $env:RUNNER_TEMP 'pbi-tools'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive pbi-tools.zip -DestinationPath $dest -Force
+
+          # Najdi EXE (pokryje 'pbi-tools.exe' i případná variantní jména)
+          $exe = Get-ChildItem $dest -Recurse -Filter "pbi-tools*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "pbi-tools EXE nebyl po rozbalení nalezen." }
+
+          # Vyplivni plnou cestu jako output kroku
+          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          Write-Host "pbi-tools EXE: $($exe.FullName)"
 
       - name: Verify pbi-tools
-        run: pbi-tools.exe --version
+        shell: pwsh
+        run: |
+          & "${{ steps.pbitools.outputs.exe }}" --version
 
       - name: Extract all PBIX files
         shell: pwsh
         run: |
           mkdir .extract 2>$null
           Get-ChildItem -Recurse -Filter *.pbix | ForEach-Object {
-            pbi-tools.exe extract $_.FullName -o ".\.extract\$($_.BaseName)" --include-m
+            & "${{ steps.pbitools.outputs.exe }}" extract $_.FullName -o ".\.extract\$($_.BaseName)" --include-m
           }
 
       - name: Generate Markdown for each model
@@ -61,3 +81,4 @@ jobs:
           git add docs
           git commit -m "Update PBIX docs [skip ci]" || exit 0
           git push
+
