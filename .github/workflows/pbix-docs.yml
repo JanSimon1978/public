@@ -1,7 +1,6 @@
 name: PBIX Docs
-
 on:
-  workflow_dispatch:    # umožní ruční spuštění
+  workflow_dispatch:
   push:
     paths:
       - '**.pbix'
@@ -9,32 +8,39 @@ on:
       - '.github/workflows/pbix-docs.yml'
 
 permissions:
-  contents: write       # umožní commity z workflow
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true     # pokud bys někdy používal Git LFS pro .pbix
+          lfs: true
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
+      # ⬇️ Stáhne poslední "pbi-tools Core" ZIP a přidá exe do PATH
+      - name: Download pbi-tools Core (latest)
+        shell: pwsh
+        run: |
+          $rel = Invoke-RestMethod -Uri https://api.github.com/repos/pbi-tools/pbi-tools/releases/latest
+          $asset = $rel.assets | Where-Object { $_.name -match 'pbi-tools\.core.*(windows|win).*x64\.zip' }
+          if (-not $asset) { throw "pbi-tools Core (Windows x64) ZIP not found on latest release." }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile pbi-tools.zip
+          Expand-Archive pbi-tools.zip -DestinationPath "$env:RUNNER_TEMP\pbi-tools" -Force
+          $exe = Get-ChildItem "$env:RUNNER_TEMP\pbi-tools" -Recurse -Filter "pbi-tools*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "pbi-tools executable not found after extract." }
+          Add-Content $env:GITHUB_PATH ($exe.DirectoryName)
 
-      - name: Install pbi-tools
-        run: dotnet tool install --global pbi-tools
+      - name: Verify pbi-tools
+        run: pbi-tools.exe --version
 
       - name: Extract all PBIX files
         shell: pwsh
         run: |
           mkdir .extract 2>$null
           Get-ChildItem -Recurse -Filter *.pbix | ForEach-Object {
-            pbi-tools extract $_.FullName -o ".\.extract\$($_.BaseName)" --include-m
+            pbi-tools.exe extract $_.FullName -o ".\.extract\$($_.BaseName)" --include-m
           }
 
       - name: Generate Markdown for each model
