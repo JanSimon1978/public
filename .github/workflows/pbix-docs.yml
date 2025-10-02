@@ -1,0 +1,57 @@
+name: PBIX Docs
+
+on:
+  workflow_dispatch:    # umožní ruční spuštění
+  push:
+    paths:
+      - '**.pbix'
+      - 'tools/**'
+      - '.github/workflows/pbix-docs.yml'
+
+permissions:
+  contents: write       # umožní commity z workflow
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true     # pokud bys někdy používal Git LFS pro .pbix
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install pbi-tools
+        run: dotnet tool install --global pbi-tools
+
+      - name: Extract all PBIX files
+        shell: pwsh
+        run: |
+          mkdir .extract 2>$null
+          Get-ChildItem -Recurse -Filter *.pbix | ForEach-Object {
+            pbi-tools extract $_.FullName -o ".\.extract\$($_.BaseName)" --include-m
+          }
+
+      - name: Generate Markdown for each model
+        shell: pwsh
+        run: |
+          mkdir docs 2>$null
+          Get-ChildItem .\.extract -Directory | ForEach-Object {
+            ./tools/Generate-ModelDocs.ps1 -ExtractRoot $_.FullName -OutFile "docs/$($_.Name).md"
+          }
+
+      - name: Commit docs back
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs
+          git commit -m "Update PBIX docs [skip ci]" || exit 0
+          git push
