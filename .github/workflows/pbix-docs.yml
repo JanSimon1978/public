@@ -1,9 +1,11 @@
 name: PBIX Docs
+
 on:
   workflow_dispatch:
   push:
     paths:
-      - '**.pbix'
+      - '.extract/**'
+      - 'models/**'
       - 'tools/**'
       - '.github/workflows/pbix-docs.yml'
 
@@ -11,64 +13,27 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  docs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
 
-      # ⬇️ Stáhni pbi-tools (Core win-x64; fallback na Desktop ZIP), ulož plnou cestu k EXE do outputu
-      - name: Download pbi-tools ZIP
-        id: pbitools
-        shell: pwsh
-        run: |
-          $rel = Invoke-RestMethod -Uri https://api.github.com/repos/pbi-tools/pbi-tools/releases/latest
-
-          # Nejprve zkus Core pro Windows x64 (název má pattern "_win-x64.zip")
-          $asset = $rel.assets | Where-Object { $_.name -like 'pbi-tools.core.*_win-x64.zip' }
-
-          # Fallback: Desktop ZIP pro Windows (obsahuje pbi-tools.exe taky)
-          if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -like 'pbi-tools.*.zip' } | Select-Object -First 1 }
-
-          if (-not $asset) { throw "Nenalezen žádný vhodný ZIP asset pro Windows." }
-
-          Write-Host "Stahuji: $($asset.name)"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile pbi-tools.zip
-
-          $dest = Join-Path $env:RUNNER_TEMP 'pbi-tools'
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Expand-Archive pbi-tools.zip -DestinationPath $dest -Force
-
-          # Najdi EXE (pokryje 'pbi-tools.exe' i případná variantní jména)
-          $exe = Get-ChildItem $dest -Recurse -Filter "pbi-tools*.exe" | Select-Object -First 1
-          if (-not $exe) { throw "pbi-tools EXE nebyl po rozbalení nalezen." }
-
-          # Vyplivni plnou cestu jako output kroku
-          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-          Write-Host "pbi-tools EXE: $($exe.FullName)"
-
-      - name: Verify pbi-tools
-        shell: pwsh
-        run: |
-          & "${{ steps.pbitools.outputs.exe }}" --version
-
-      - name: Extract all PBIX files
-        shell: pwsh
-        run: |
-          mkdir .extract 2>$null
-          Get-ChildItem -Recurse -Filter *.pbix | ForEach-Object {
-            & "${{ steps.pbitools.outputs.exe }}" extract $_.FullName -o ".\.extract\$($_.BaseName)" --include-m
-          }
-
-      - name: Generate Markdown for each model
+      - name: Generate Markdown for all models
         shell: pwsh
         run: |
           mkdir docs 2>$null
-          Get-ChildItem .\.extract -Directory | ForEach-Object {
-            ./tools/Generate-ModelDocs.ps1 -ExtractRoot $_.FullName -OutFile "docs/$($_.Name).md"
+          # Najdi všechny zdrojové modely (PbixProj/TMDL)
+          $modelFiles = Get-ChildItem -Recurse -Include model.bim,model.tmsl.json
+          if ($modelFiles.Count -eq 0) {
+            Write-Error "Nenalezen žádný model (model.bim ani model.tmsl.json). \
+            Proveď lokálně 'pbi-tools extract <*.pbix> -o ./models/<název> --include-m' a commitni složku."
+          }
+          foreach ($m in $modelFiles) {
+            $root = Split-Path $m.FullName -Parent
+            $name = Split-Path $root -Leaf
+            ./tools/Generate-ModelDocs.ps1 -ExtractRoot $root -OutFile "docs/$name.md"
           }
 
       - name: Commit docs back
@@ -81,4 +46,3 @@ jobs:
           git add docs
           git commit -m "Update PBIX docs [skip ci]" || exit 0
           git push
-
