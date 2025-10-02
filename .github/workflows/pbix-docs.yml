@@ -1,11 +1,10 @@
-name: PBIX Docs
+name: PBIX Docs (from TMDL)
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - '.extract/**'
-      - 'models/**'
+      - 'tmdl/**'                 # když upravíš TMDL v repu
       - 'tools/**'
       - '.github/workflows/pbix-docs.yml'
 
@@ -20,20 +19,44 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Generate Markdown for all models
+      # Stáhnout pbi-tools Core (ZIP) a určit plnou cestu k EXE
+      - name: Download pbi-tools Core
+        id: pbitools
+        shell: pwsh
+        run: |
+          $rel = Invoke-RestMethod -Uri https://api.github.com/repos/pbi-tools/pbi-tools/releases/latest
+          $asset = $rel.assets | Where-Object { $_.name -like 'pbi-tools.core.*_win-x64.zip' } | Select-Object -First 1
+          if (-not $asset) { throw "Core ZIP for Windows x64 not found." }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile pbi-tools.zip
+          $dest = Join-Path $env:RUNNER_TEMP 'pbi-tools'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive pbi-tools.zip -DestinationPath $dest -Force
+          $exe = Get-ChildItem $dest -Recurse -Filter "pbi-tools*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "pbi-tools EXE not found after extract." }
+          "exe=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Using pbi-tools: $($exe.FullName)"
+
+      # TMDL ➜ TMSL (RAW JSON). Pro každý model ve složce tmdl/*
+      - name: Convert TMDL to TMSL
+        shell: pwsh
+        run: |
+          mkdir .tmsl 2>$null
+          Get-ChildItem ./tmdl -Directory | ForEach-Object {
+            $name = $_.Name
+            $out  = ".\.tmsl\$name"
+            mkdir $out 2>$null | Out-Null
+            & "${{ steps.pbitools.outputs.exe }}" convert $_.FullName -outPath $out -modelSerialization Raw -overwrite
+          }
+
+      # Vygeneruj Markdown pomocí tvého skriptu
+        # (skript očekává, že v kořeni je model.tmsl.json nebo model.bim)
+      - name: Generate Markdown
         shell: pwsh
         run: |
           mkdir docs 2>$null
-          # Najdi všechny zdrojové modely (PbixProj/TMDL)
-          $modelFiles = Get-ChildItem -Recurse -Include model.bim,model.tmsl.json
-          if ($modelFiles.Count -eq 0) {
-            Write-Error "Nenalezen žádný model (model.bim ani model.tmsl.json). \
-            Proveď lokálně 'pbi-tools extract <*.pbix> -o ./models/<název> --include-m' a commitni složku."
-          }
-          foreach ($m in $modelFiles) {
-            $root = Split-Path $m.FullName -Parent
-            $name = Split-Path $root -Leaf
-            ./tools/Generate-ModelDocs.ps1 -ExtractRoot $root -OutFile "docs/$name.md"
+          Get-ChildItem .\.tmsl -Directory | ForEach-Object {
+            $name = $_.Name
+            ./tools/Generate-ModelDocs.ps1 -ExtractRoot $_.FullName -OutFile "docs/$name.md"
           }
 
       - name: Commit docs back
@@ -44,5 +67,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs
-          git commit -m "Update PBIX docs [skip ci]" || exit 0
+          git commit -m "Update PBIX docs from TMDL [skip ci]" || exit 0
           git push
